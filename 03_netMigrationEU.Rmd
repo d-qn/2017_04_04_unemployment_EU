@@ -1,0 +1,224 @@
+---
+title: "03_map_EU_netMigration"
+author: "Duc-Quang Nguyen"
+date: "20 September 2016"
+output: html_document
+---
+
+
+## Resources
+* [Regional Statistics Illustrated](http://ec.europa.eu/eurostat/cache/RSI/#?vis=nuts2.population&lang=en)
+* [Eurostat geodata](http://ec.europa.eu/eurostat/web/gisco/geodata/reference-data/administrative-units-statistical-units/nuts)
+* [Crude rates of population change by NUTS 2 region](http://ec.europa.eu/eurostat/web/products-datasets/-/tgs00099)
+# [NUTS geo](http://ec.europa.eu/eurostat/web/products-manuals-and-guidelines/-/KS-GQ-14-006)
+
+
+## 
+
+```{r setup, include=FALSE}
+downloadData <- F
+
+translation.file <- "input/Crude net migration regional map - Sheet1.csv"
+
+eu.tgs00099.file <- "data/all_tgs00099.csv"
+eu.migration.file <- "data/migration.2014.csv"
+eu.geodata.file <- "input/eurostat_NUTS_geodata.Rdata"
+
+colourText_bkbg <- '#262626'
+border.color <- "#737373"
+
+
+
+# Eurostat data tables
+es.tb <- c('tgs00099')
+
+library(readr)
+library(tidyr)
+library(dplyr)
+library(magrittr)
+library(countrycode)
+#library(ggplot2)
+library(scales)
+library(swiMap)
+library(swiTheme)
+library(forcats)
+
+### Getting data in packages
+library(eurostat)
+library(htmltools)
+library(shiny)
+library(swiRcharts)
+library(ggiraph)
+library(ggplot2)
+require(rgdal)
+require(rgeos)
+require(maptools)
+```
+
+
+
+```{r load data, include = F}
+### Get data from Eurostat
+if(downloadData) {
+  
+  # Get migration data 
+  dat <- get_eurostat(es.tb, time_format = "raw", cache = F, keepFlags = T)
+  
+  # wrange & discard 
+  data <- label_eurostat(dat %>% select(-flags), eu_order = T, code = c("geo"))
+  data$time <- as.numeric(data$time)
+  # # add back data flags ??
+  # data$flags <- dat$flags
+  # filter for the last year and only net migratio indicator
+  write.csv(data, eu.tgs00099.file, row.names = F)
+  data %<>% 
+    filter(indic_de == "Crude rate of net migration plus statistical adjustment", 
+           time == 2014) %>% select(-time)
+  write.csv(data, eu.migration.file, row.names = F)
+  
+  # Get geospatial data
+  geo <- get_eurostat_geospatial(output_class = "df", resolution = "20")
+  save(geo, file = eu.geodata.file)
+} else {
+  data <- read.csv(eu.migration.file)
+  load(eu.geodata.file)
+}
+
+# translation
+txt <- read.csv(translation.file, row.names = 1, stringsAsFactors = F)
+# discard incomplete translations
+cidx <- unique(which(txt =="" | is.na(txt), T)[,2])
+if(length(cidx > 0)) {
+  warning(paste(colnames(txt)[cidx], collapse = "\t"), " languages will be discarded!", "\n")
+  txt <- txt[,-cidx, drop = F]
+}
+colnames(txt)
+
+
+
+```
+
+## Map
+
+```{r helper mapping, echo = F}
+# helper mapping 
+mapTheme <- function(
+  base_size = 14, base_family = "OpenSans-CondensedLight",
+  title_family = "OpenSans-CondensedBold", subtitle_family = "OpenSans-CondensedLight",
+  colour = colourText_bkbg
+ ) { 
+   theme_bw() + 
+    theme(
+      axis.line = element_blank(),
+      axis.ticks = element_blank(), 
+      axis.title = element_blank(), 
+      axis.text = element_blank(),
+      panel.grid = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      plot.background = element_rect(fill = NULL),
+      legend.text = element_text(colour = colourText_bkbg, size = 6, hjust = 1, family = base_family),
+      legend.title = element_text(colour = colourText_bkbg, size = 9, family = base_family),
+      legend.key = element_blank(),
+      legend.key.width = unit(0.9, "lines"),
+      legend.key.height = unit(0.9, "lines"),
+      legend.position=c(0.78, 0.71), 
+      legend.justification=c(0, 1),
+      plot.margin = rep(unit(0,"null"),4),
+      panel.margin = unit(0,"null")
+    ) 
+}
+```
+
+
+```{r map}
+
+data$bins <- cut(data$values, 
+                 breaks = c(-Inf, -10, -7.5, -5, -2.5, 0, 2.5, 5, 7.5, 10, Inf), 
+                 labels = c("< -10", " -10 - -7.5", " -7.5 - 5", " -5 - 2.5", " -2.5 - 0", 
+                            "  0 - 2.5", "  2.5 - 5", "  5 - 7.5", "  7.5 - 10", "  > 10"))
+
+  
+lang <- 'FR'
+
+for(lang in colnames(txt)) {
+  cat("\n", lang)
+  
+  df <- filter(geo, STAT_LEVL_ == 2)
+  df <- cbind(df, data[match(as.character(df$NUTS_ID), as.character(data$geo_code)), c('geo', 'values', 'bins')])
+  ct <- filter(geo, STAT_LEVL_ == 0)
+  
+  # get the country name 
+  df$iso2 <- strtrim(df$NUTS_ID, 2)
+  
+  # hack for UK and GR iso code 
+  df$iso2<- gsub("UK", "GB", df$iso2)
+  df$iso2<- gsub("EL", "GR", df$iso2)
+  
+  df$country <- countryTranslation(df$iso2, lang)[,-1]
+  
+  # Construct tooltip
+  df$tip <- paste0(
+    '<h4>', as.character(df$country), '</h4><div class="tpsubtitle">',
+    as.character(df$geo), '</div><div class = "tp">',
+    txt['leg.title', lang], ' <b>', df$values, '</b></div>')
+  df$tip <- gsub("'", "_", gsub("\\\n", "", df$tip))
+  
+  map <- ggplot() + 
+    geom_polygon_interactive(
+      data = df,
+      aes( x = long, y = lat, group = group, fill = bins, data_id = as.numeric(id), tooltip = tip)
+    ) +
+    coord_cartesian() + 
+    scale_x_continuous(limits = c(-10.5, 45.5), name = "", expand = c(0,0)) +
+    scale_y_continuous(limits = c(33, 71.5), name = "", expand = c(0,0)) +
+    #coord_quickmap(expand = F)  +  xlim(c(-11, 45)) + ylim(c(34, 71.5)) +
+    mapTheme(base_family = txt["base.font", lang]) + 
+    scale_fill_manual(values = swi_dpal3, name = paste0(txt['leg.title', lang], "  ")) +
+    geom_polygon(data = ct, aes(x=long,y=lat,group=group, id = group),
+                 fill =NA, colour = "#737373", size = 0.1)
+  
+  tooltip_css <- "background-color:#f2f2f2;padding:0px;margin:0px;border-radius:5px;"
+  hover_css <- "fill:#996666;"
+  imap <- ggiraph(
+    code = {print(map)}, 
+    width = 1, 
+    pointsize = 9,
+    zoom_max = 2, 
+    tooltip_extra_css = tooltip_css,
+    hover_css = hover_css,
+    fonts = list(sans = "Open Sans")
+  )
+  
+  html.outfile <- paste0("regionalEUmap_netMigration_", lang, ".html")
+  
+  source <- paste0(
+    txt['source', lang], ": ", htmlLink(txt['source.url', lang], txt['source.name', lang]), " & ",
+    htmlLink(txt['source2.url', lang], txt['source2.name', lang]), " | ",
+    txt['code', lang], ": ", htmlLink(txt['code.url', lang], txt['code.name', lang]), " | ",
+    htmlLink("http://www.swissinfo.ch", 'swissinfo.ch'), " | ",
+    htmlLink("https://twitter.com/duc_qn", '@duc_qn')    
+  )
+  #footer <- paste0(txt["footer1", lang], "<br>", txt["footer2", lang])
+  
+  
+  save_html(
+    tags$html(
+      tags$head(includeHTML("stylesMap.html")),
+      tags$body(    
+        h2(txt["title1", lang]),
+        div(class = "descr", HTML(paste0(txt["descr1", lang], '&nbsp; &nbsp; <img src="Interactive_icon.svg.png" width="18" align="top">'))),
+        div(class="container", imap),
+        div(id = "cite", HTML(source)),
+        HTML(iframeresizer)  
+      )), file = html.outfile, libdir = "js"
+  )
+  
+  # move stuff
+  fileToMove <- c(html.outfile, "js")
+  file.rename(from = fileToMove, to = paste0("output/", fileToMove))
+      
+}
+
+    
+```

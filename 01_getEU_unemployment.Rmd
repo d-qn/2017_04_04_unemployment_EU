@@ -1,0 +1,355 @@
+---
+title: ""
+author: "Duc-Quang Nguyen | swissinfo.ch"
+date: " 2017"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: simplex
+---
+
+
+
+## Related
+* [RTS](https://www.rts.ch/info/economie/8514269-taux-de-chomage-au-plus-bas-depuis-plus-de-sept-ans-dans-la-zone-euro.html)
+* [Europe’s Unemployment Rate Continues Decline in Early 2017](https://www.courthousenews.com/eu-unemployment-12/)
+* [http://www.bbc.com/news/business-39477151](http://www.bbc.com/news/business-39477151)
+* [FT](https://www.ft.com/content/a1135284-1869-11e7-a53d-df09f373be87)
+
+
+
+```{r setup, include=FALSE}
+downloadData <- F
+translation.file <- "input/Unemployment Europe maps - Sheet1.csv"
+
+
+# Eurostat data tables
+es.tb <- c('lfst_r_lfu3rt')
+eu.unemployment.file <- "input/lfst_r_lfu3rt.sv"
+eu.geodata20.file <- "input/eurostat_20_NUTS_geodata.csv"
+#eu.geodata01.file <- "input/eurostat_01_NUTS_geodata.csv"
+eu.geodata20b.file <- "input/eurostat_NUTS_geodata.Rdata"
+
+
+# construct yearly aggregate unemployment
+# source eurozone http://appsso.eurostat.ec.europa.eu/nui/submitViewTableAction.do
+# source CH https://www.bfs.admin.ch/bfs/fr/home/statistiques/travail-remuneration/enquetes/chom-bit.assetdetail.1963500.html
+unem.byYear<- data.frame(
+  time = 2006:2015,
+  Eurozone     = c(8.4, 7.5, 7.6, 9.5, 10.0, 10.1, 11.3, 12.0, 11.6, 10.9),
+  Switzerland =  c(4.1, 3.7, 3.4,	4.3, 4.5, 4.0, 4.2,	4.4, 4.5,	4.5)
+)
+
+eurozone <- c("Belgium","Cyprus","Estonia","Finland","France","Germany","Greece",
+  "Ireland","Italy","Latvia","Lithuania","Luxembourg","Malta","Netherlands","Portugal",
+  "Slovakia","Slovenia", "Spain"
+)
+
+library(readr)
+library(tidyr)
+library(dplyr)
+library(magrittr)
+library(countrycode)
+library(ggplot2)
+library(scales)
+library(swiMap)
+library(swiTheme)
+
+library(eurostat)
+
+### Interactive 
+library(htmltools)
+library(shiny)
+library(swiRcharts)
+library(rCharts)
+library(magick)
+### Mapping 
+require(rgdal)
+require(rgeos)
+require(maptools)
+
+### Misc stuff
+require(viridis)
+```
+
+
+```{r load data, include = F}
+### Get data from Eurostat
+if(downloadData) {
+  
+  # Get migration data 
+  dat <- get_eurostat(es.tb, time_format = "raw", cache = F, keepFlags = T)
+  # wrangle & discard 
+  dat %<>% filter(sex == "T") %>% select(-flags, -unit, -sex) 
+  dat$geo.full <- label_eurostat(dat)$geo
+  dat$time <- as.numeric(dat$time)
+  write.csv(dat, eu.unemployment.file, row.names = F)
+   
+   # get the geo data
+  geo <- get_eurostat_geospatial(output_class = "df", resolution = "20")
+  write.csv(geo, file = eu.geodata20.file, row.names = F)
+} else {
+  dat <- read.csv(eu.unemployment.file)
+  load(eu.geodata20b.file)
+  geo2 <- geo
+  geo <- read.csv(eu.geodata20.file)
+}
+
+names(eurozone) <- countrycode(eurozone, "country.name", "iso2c")
+
+txt <- loadTranslation(translation.file)
+```
+
+
+## Map
+
+```{r helper mapping, echo = F}
+bg.colour <- '#333333'
+colourText <- '#f7f5ed'
+
+# helper mapping 
+mapTheme <- function(
+  base_size = 16, 
+  base_family = "OpenSans-CondensedLight",
+  title_family = "OpenSans-CondensedBold",
+  bg.colour = '#1a0000', colour = colourText
+ ) { 
+   theme_bw(base_family = base_family) + 
+    theme(
+      panel.background = element_rect(fill = bg.colour, size = NULL, colour = bg.colour),
+      plot.background = element_rect(fill = bg.colour, size = NULL,colour = bg.colour),
+      axis.line = element_blank(),
+      axis.ticks = element_blank(), 
+      axis.title = element_blank(), 
+      axis.text = element_blank(),
+      panel.grid = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      legend.text = element_text(colour = colour, size = base_size * 1.1, hjust = 1, family = base_family),
+      legend.title = element_text(colour = colour, size = base_size * 1.3, family = base_family),
+      legend.key = element_blank(),
+      legend.key.width = unit(0.9, "lines"),
+      legend.key.height = unit(2.9, "lines"),
+      legend.position=c(0.8, 0.77), 
+      legend.justification=c(0, 1),
+      legend.background = element_rect(fill = bg.colour, size = 0),
+      plot.margin = unit(c(0.45, 0, 0, 0.2), "cm"),
+      panel.spacing = unit(0,"null"),
+      plot.title=element_text(family = title_family, size = base_size * 1.5, 
+                              colour = colour, margin=margin(b=13, l=7)),
+      plot.subtitle=element_text(family = base_family , size = base_size * 1.3, 
+                                 color = colour,  margin=margin(l=7)),
+      plot.caption=element_text(family = base_family, size = base_size * 0.9, 
+                                colour = "#efe9e0", margin=margin(t=10, b=10, r=15))
+    ) 
+}
+
+```
+
+
+```{r prepare for mapping, include = F}
+map.xlim <- c(-11.7, 45.5)
+map.ylim <- c(34, 71.5)
+
+
+# subset geo data for NUTS2
+geo.df <- geo %>% filter(STAT_LEVL_ == 2) 
+geo.df$NUTS_ID <- as.character(geo.df$NUTS_ID)
+
+ # get the country name 
+geo.df$iso2 <- strtrim(geo.df$NUTS_ID, 2)
+  
+# hack for UK and GR iso code 
+geo.df$iso2<- gsub("UK", "GB", geo.df$iso2)
+geo.df$iso2<- gsub("EL", "GR", geo.df$iso2)
+
+ct <- filter(geo2, STAT_LEVL_ == 0)
+ch.geo <- filter(geo2, STAT_LEVL_ == 0, NUTS_ID == 'CH') 
+
+## subset data
+# bin value and assign colours
+dat$geo <- as.character(dat$geo)
+## Make a list of yearly unemployement binned
+dd <- dat %>% filter(age == "Y_GE15") %>% select(-age)
+
+dd$bins <- cut(dd$values, 
+                 breaks = c(0, 2.5, 5, 7.5, 10, 12.5, 15, 17.5, 20, 22.5, 25, Inf), 
+                 labels = c("  < 2.5", "  2.5 - 5", "  5  - 7.5", "  7.5 - 10", "  10  - 12.5", 
+                            "  12.5 - 15", "  15 - 17.5", "  17.5 - 20 ", "  20 - 22.5 ", "  22.5 - 25", "  > 25"))
+
+dd %<>% filter(time >= 2006, !is.na(bins))
+ddd <- split(dd, dd$time)  
+
+dl <- dd %>% filter(time == 2015)
+
+yearly.summary <- unem.byYear
+yearly.summary$time <- as.character(yearly.summary$time)
+
+```
+
+```{r map animated gif}
+mapVote <- function(
+  df, geo.df = geo.df, ct = ct, 
+  year = "",
+  yearly.summary = yearly.summary,
+  title = "How unemployment became more polarised in the south of Europe",
+  subtitle = "Annual unemployment rate by european regions",
+  legend.title =  "Unemployment %",
+  caption = "source: Eurostat",
+  base_size = 16, 
+  base_family = "OpenSans-CondensedLight",
+  title_family = "OpenSans-CondensedBold",
+  legend_family = "Open Sans Condensed"
+) {
+  cat("\n", unique(df$time))
+  dff <- cbind(geo.df, df[match(as.character(geo.df$NUTS_ID), 
+                                as.character(df$geo)), c( 'values', 'bins')])
+  dff %<>% filter(!is.na(bins))
+  
+  p <- ggplot(dff) +  geom_polygon(aes( x = long, y = lat, group = group, fill = bins), size = 0) +
+    mapTheme(base_size = base_size, base_family = base_family, title_family = title_family) +
+    coord_cartesian() + 
+    scale_x_continuous(limits = map.xlim, name = "", expand = c(0,0)) +
+    scale_y_continuous(limits = map.ylim, name = "", expand = c(0,0)) +      
+    scale_fill_viridis(discrete = T, option = "D", drop = F, name = legend.title) + 
+    geom_polygon(data = ct, aes(x=long, y=lat, group=group),
+                 fill = NA, colour = "#e5dbcd", size = 0.2) +
+    geom_polygon(data = ch.geo, aes(x=long, y=lat, group=group),
+                 fill = NA, colour = "#f7f5ed", size = 0.3)
+  p <- p + labs(title = title, subtitle = subtitle, caption = caption)
+  if(year != "") {
+    p <- p + annotate("text", x = -11, y = 68, label = year, colour = "#ffe6e6", size = 37, 
+                 family = title_family, alpha = 0.6, hjust = 0)
+  }
+  if(!is.null(yearly.summary)) {
+    yearlyt <- yearly.summary %>% filter(time == year) %>% select(-time) %>% unlist()
+    p <- p + annotate(
+      "text", x = -11, y = 65, label = paste0(names(yearlyt)[1], " ", yearlyt[1], "%"), 
+      colour = "#efe9e0", size = 6, family = base_family, hjust = 0) + 
+      annotate("text", x = -11, y = 64, label = paste0(names(yearlyt)[2], " ", yearlyt[2], "%"), 
+               colour = "#efe9e0", size = 6, family = base_family,  hjust = 0)
+  }
+
+}
+
+for (lang in colnames(txt)) {
+  
+  tmp.outfile <- paste0("output/unemployment_europe_", lang, "_%03d",  ".png")
+  outfile <- paste0("output/animated_EuropeanUnemployment_", lang, ".gif")
+  ysummary <- yearly.summary
+  colnames(ysummary)[2:3] <- c(txt["eurozone", lang], txt["switzerland", lang])
+  
+  png(filename = tmp.outfile, width = 700 * 1.4, height = 720 * 1.4, pointsize = 7)
+  
+  sapply(names(ddd), function(year) {
+    print(
+      mapVote(ddd[[year]], geo.df, ct, year = year, yearly.summary = ysummary,
+              title = txt["title1", lang],
+              subtitle = txt["descr1", lang],
+              legend.title =  txt["leg.title", lang],
+              caption = paste0(txt["source", lang], ": ", 
+                               txt["source.name", lang], ", ", 
+                               txt["source2.name", lang], " | @duc_qn | swissinfo.ch "),
+              base_size = 18, 
+              base_family = txt["base.font", lang],
+              title_family = txt["title.font", lang])
+    )
+  })
+  dev.off()  
+  
+  tmpfiles <- list.files("output", pattern = lang, full.names = T)
+  tmpfiles <- tmpfiles[grepl("png$", tmpfiles)]
+  maps <- image_read(tmpfiles)
+  animation <- image_animate(c(maps, maps[length(maps)],  maps[length(maps)]), fps = 0.5)
+  image_write(animation, outfile)  
+  file.remove(tmpfiles)
+}
+
+```
+
+```{r map interactive last year}
+library(ggiraph)
+
+for(lang in colnames(txt)) {
+  cat("\n", lang)
+
+  # combine with the geo data
+  df <- cbind(geo.df, dl[match(as.character(geo.df$NUTS_ID), 
+                                as.character(dl$geo)), c( 'geo.full', 'values', 'bins')])
+  df %<>% filter(!is.na(bins))
+  df$country <- countryTranslation(df$iso2, lang)[,-1]
+  
+  # Construct tooltip
+  df$tip <- paste0(
+    '<h4>', as.character(df$country), '</h4><div class="tpsubtitle">',
+    as.character(df$geo.full), '</div><div class = "tp">',
+    gsub("%", "", txt['leg.title', lang]), '<b>', df$values, '%</b></div>')
+  df$tip <- gsub("'", "_", gsub("\\\n", "", df$tip))
+  
+  map <- ggplot() + 
+    geom_polygon_interactive(
+      data = df,
+      aes( x = long, y = lat, group = group, fill = bins, data_id = as.numeric(id), tooltip = tip)
+    ) +
+    coord_cartesian() + 
+    mapTheme( base_size = 14, base_family = txt["base.font", lang], title_family = txt["title.font", lang]) + 
+    theme(
+      legend.text = element_text(colour = colourText, size = 6, hjust = 1, family = "Open Sans Condensed"),
+      legend.title = element_text(colour = colourText, size = 9, family = "Open Sans Condensed"),
+      legend.key.width = unit(0.7, "lines"),
+      legend.key.height = unit(1.1, "lines"),
+      plot.margin = unit(c(0.4, 0.2, 1.5, 0), "cm")
+    ) +
+    coord_cartesian() + 
+    scale_x_continuous(limits = map.xlim, name = "", expand = c(0,0)) +
+    scale_y_continuous(limits = map.ylim, name = "", expand = c(0,0)) +      
+    scale_fill_viridis(discrete = T, option = "D", drop = F, name = txt["leg.title", lang]) + 
+    geom_polygon(data = ct, aes(x=long, y=lat, group=group),
+                 fill = NA, colour = "#e5dbcd", size = 0.05) +
+    geom_polygon(data = ch.geo, aes(x=long, y=lat, group=group),
+                 fill = NA, colour = "#f7f5ed", size = 0.1)
+
+  
+  tooltip_css <- "background-color:#f2f2f2;padding:0px;margin:0px;border-radius:5px;"
+  hover_css <- "fill:#d18768;"
+  imap <- ggiraph(
+    code = {print(map)}, 
+    width = 1, 
+    pointsize = 9,
+    tooltip_extra_css = tooltip_css,
+    hover_css = hover_css,
+    fonts = list(sans = "Open Sans Condensed", serif = "Open Sans Condensed")
+  )
+  
+  html.outfile <- paste0("regionalMap_europe_unemployment_", lang, ".html")
+  
+  source <- paste0(
+    txt['source', lang], ": ", htmlLink(txt['source.url', lang], txt['source.name', lang]), " & ",
+    htmlLink(txt['source2.url', lang], txt['source2.name', lang]), " | ",
+    txt['code', lang], ": ", htmlLink(txt['code.url', lang], txt['code.name', lang]), " | ",
+    htmlLink("http://www.swissinfo.ch", 'swissinfo.ch'), " | ",
+    htmlLink("https://twitter.com/duc_qn", '@duc_qn')    
+  )
+  #footer <- paste0(txt["footer1", lang], "<br>", txt["footer2", lang])
+  
+  save_html(
+    tags$html(
+      tags$head(includeHTML("stylesMap.html")),
+      tags$body(    
+       # h2(txt["title1", lang]),
+        h2(HTML(paste0(txt["descr2", lang], '&nbsp; &nbsp; <img src="Interactive_icon.svg.png" width="18" align="top">'))),
+        div(class="container", imap),
+        div(id = "cite", HTML(source)),
+        HTML(iframeresizer)  
+      )), file = html.outfile, libdir = "js", background = "#1a0000"
+  )
+  
+  # move stuff
+  fileToMove <- c(html.outfile, "js")
+  file.rename(from = fileToMove, to = paste0("output/", fileToMove))
+      
+}
+
+
+```

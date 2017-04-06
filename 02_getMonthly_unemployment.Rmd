@@ -1,0 +1,104 @@
+---
+title: ""
+author: "Duc-Quang Nguyen | swissinfo.ch"
+date: " 2017"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: simplex
+---
+
+
+## Data
+
+* [eurostat monthly unemployment](http://appsso.eurostat.ec.europa.eu/nui/show.do?dataset=une_rt_m&lang=en)
+# [source CH](https://www.bfs.admin.ch/bfs/fr/home/statistiques/travail-remuneration/enquetes/chom-bit.assetdetail.1963500.html)
+```{r setup, include=FALSE}
+downloadData <- F
+#translation.file <- "input/Unemployment Europe maps - Sheet1.csv"
+
+
+# Eurostat data tables
+es.tb <- c('une_rt_m')
+eu.munemployment.file <- "input/une_rt_m.csv"
+ch.unemployment.file <- "data/je-f-03.03.01.03.xls"
+
+library(readr)
+library(tidyr)
+library(dplyr)
+library(magrittr)
+library(countrycode)
+library(ggplot2)
+library(scales)
+library(swiMap)
+library(swiTheme)
+library(forcats)
+
+### Getting data in packages
+
+library(eurostat)
+library(readxl)
+```
+
+```{r load data, include = F}
+### Get data from Eurostat
+if(downloadData) {
+  # Get migration data 
+  dat <- get_eurostat(es.tb, time_format = "raw", cache = F, keepFlags = T)
+  # wrangle & discard 
+  dat %<>% filter(sex == "T", s_adj == 'SA', unit == 'PC_ACT') %>% select(-flags, -unit, -sex, -s_adj) 
+  
+  dat$geo.full <- label_eurostat(dat)$geo
+  
+  times <- unique(dat$time)
+  library(timeDate)
+  times <- structure(as.Date(timeLastDayInMonth(as.Date(paste0(gsub("M", "-",times), "-01"), "%Y-%m-%d"))), names = times)
+  #times <- structure(eurostat:::eurotime2date(x = times, last = FALSE), names = as.character(times))
+  dat$time <- times[match(dat$time, names(times))]
+  
+  write.csv(dat, eu.munemployment.file, row.names = F)
+} else {
+  dat <- read.csv(eu.munemployment.file)
+  dat$time <- as.Date(as.character(dat$time))
+}
+
+# combine ofs excel file
+values <- read_excel(ch.unemployment.file, skip =5 )[,-1] 
+val.1 <- values[1,] %>% unlist()
+stopifnot(length(val.1) == 9 * 12)
+
+values <- read_excel(ch.unemployment.file, sheet = 2, skip =5 )[,-1] 
+val.2 <- values[1,] %>% unlist()
+stopifnot(length(val.2) == 10 * 12)
+
+values <- read_excel(ch.unemployment.file, sheet = 3, skip =5 )[,-1] 
+val.3 <- values[1,] %>% unlist()
+stopifnot(length(val.3) %% 12 == 0)
+
+# generate the sequnce of month end dates
+ch.mun <- c(val.1, val.2, val.3)
+dates <- seq(as.Date("1991-02-1"), as.Date("2017-01-01"), by = "month") -1 
+stopifnot(length(ch.mun) == length(dates))
+
+ch <- data.frame(age = "TOTAL", time = dates, values = ch.mun, geo = "CH", geo.full = "Switzerland")
+
+
+txt <- loadTranslation(translation.file)
+```
+
+```{r wrangle for DW}
+iso2.sub <- c('CH', 'IT', 'EL', 'EA', 'DE', 'JP', 'UK', 'US', 'DE', 'ES')
+
+
+data <- rbind(dat %>% filter(age == "TOTAL"), ch %>% filter(age == "TOTAL")) %>% select(-age) %>% filter(geo %in% iso2.sub)
+ggplot(data %>% filter(time >= as.Date("2000-01-01"))) + geom_line(aes(x=time, y=values, group = geo, colour = geo))
+
+dd <- data %>% filter(time >= as.Date("2000-01-01")) %>% select(-geo)
+dd$geo.full <- gsub(" \\(.*\\)", "", dd$geo.full)
+
+dd%<>% spread(geo.full, values)
+
+write.csv(dd, file = "input/monthly_unemployment4DW.csv", row.names = F)
+```
+
